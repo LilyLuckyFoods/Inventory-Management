@@ -1,0 +1,1250 @@
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, collection, onSnapshot, addDoc, updateDoc, deleteDoc, query, where, getDocs } from 'firebase/firestore';
+
+// Initialize Firebase
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+const firebaseConfig = {
+  apiKey: "AIzaSyAh_GigZUcwiZyHLedIwaAMFGhBQ83ayVw",
+  authDomain: "inventory-database-5695c.firebaseapp.com",
+  projectId: "inventory-database-5695c",
+  storageBucket: "inventory-database-5695c.firebasestorage.app",
+  messagingSenderId: "598833603680",
+  appId: "1:598833603680:web:cda4264f70a49b7c804f05",
+  measurementId: "G-DL3YVHLXHQ"
+};
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+// Use this to get the current app ID for Firestore pathing.
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+// App component
+const App = () => {
+  const [products, setProducts] = useState([]);
+  const [items, setItems] = useState([]);
+  const [newProduct, setNewProduct] = useState({ name: '', itemNumber: '', productType: 'Ambient', casesPerPallet: '', shelfLifeInDays: '', targetLabel: 'Regular Customer', countryLabel: 'US' });
+  const [newInventoryItem, setNewInventoryItem] = useState({ productId: '', sku: '', lots: [], locations: [], customerType: 'Regular', onHold: false });
+  const [editingItem, setEditingItem] = useState(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [userId, setUserId] = useState(null);
+  const [loading, setLoading] = useState(true);
+  
+  // State for search and auto-populate
+  const [searchKeyword, setSearchKeyword] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchMessage, setSearchMessage] = useState('');
+  
+  // State for sales data processing
+  const [salesData, setSalesData] = useState('');
+  const [pendingSalesUpdates, setPendingSalesUpdates] = useState([]);
+  const [salesMessage, setSalesMessage] = useState('');
+
+  // New state for physical inventory count
+  const [physicalInventoryData, setPhysicalInventoryData] = useState('');
+  const [pendingPhysicalUpdates, setPendingPhysicalUpdates] = useState([]);
+  const [physicalInventoryMessage, setPhysicalInventoryMessage] = useState('');
+
+  // New state for bulk product adding
+  const [productMasterData, setProductMasterData] = useState('');
+  const [pendingProductAdds, setPendingProductAdds] = useState([]);
+  const [productMasterMessage, setProductMasterMessage] = useState('');
+
+  // State for filters and reports
+  const [filterOnHold, setFilterOnHold] = useState('All');
+  const [filterProductType, setFilterProductType] = useState('All');
+  const [activeReport, setActiveReport] = useState('Inventory');
+
+  // State for location and lot management
+  const [currentLocation, setCurrentLocation] = useState('');
+  const [newLot, setNewLot] = useState({ quantity: '', expirationDate: '' });
+
+  // Sign in and set up auth listener
+  useEffect(() => {
+    const signIn = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined') {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Error signing in:", error);
+      }
+    };
+    signIn();
+
+    const unsubscribe = onAuthStateChanged(auth, user => {
+      if (user) {
+        setUserId(user.uid);
+        setIsAuthReady(true);
+      } else {
+        console.log("User is not authenticated. The app will proceed in an unauthenticated state.");
+        setIsAuthReady(true);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Fetch product and inventory data from Firestore
+  useEffect(() => {
+    if (!isAuthReady || !userId) return;
+
+    const inventoryPath = `/artifacts/${appId}/users/${userId}/inventory`;
+    const productsPath = `/artifacts/${appId}/users/${userId}/products`;
+
+    const unsubscribeInventory = onSnapshot(collection(db, inventoryPath),
+      (snapshot) => {
+        const itemsList = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+        setItems(itemsList);
+        setLoading(false);
+      },
+      (error) => {
+        console.error("Error fetching inventory documents:", error);
+        setLoading(false);
+      }
+    );
+
+    const unsubscribeProducts = onSnapshot(collection(db, productsPath),
+      (snapshot) => {
+        const productsList = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+        setProducts(productsList);
+      },
+      (error) => {
+        console.error("Error fetching product documents:", error);
+      }
+    );
+
+    return () => {
+      unsubscribeInventory();
+      unsubscribeProducts();
+    };
+  }, [isAuthReady, userId]);
+
+  // Handle input change for new product form
+  const handleProductInputChange = (e) => {
+    const { name, value } = e.target;
+    setNewProduct({ ...newProduct, [name]: value });
+  };
+
+  // Add a new product to the master list
+  const handleAddProduct = async (e) => {
+    e.preventDefault();
+    if (!newProduct.name || !newProduct.itemNumber || !newProduct.shelfLifeInDays) {
+      console.log("Please fill out all required fields.");
+      return;
+    }
+    
+    try {
+      const productsPath = `/artifacts/${appId}/users/${userId}/products`;
+      await addDoc(collection(db, productsPath), newProduct);
+      setNewProduct({ name: '', itemNumber: '', productType: 'Ambient', casesPerPallet: '', shelfLifeInDays: '', targetLabel: 'Regular Customer', countryLabel: 'US' });
+      setProductMasterMessage("Product added successfully!");
+    } catch (error) {
+      console.error("Error adding product:", error);
+      setProductMasterMessage("Error adding product.");
+    }
+  };
+
+  // Handle inventory form input changes
+  const handleInventoryInputChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    const newValue = type === 'checkbox' ? checked : value;
+    if (editingItem) {
+      setEditingItem({ ...editingItem, [name]: newValue });
+    } else {
+      setNewInventoryItem({ ...newInventoryItem, [name]: newValue });
+    }
+  };
+
+  // Handle input change for new lot
+  const handleLotInputChange = (e) => {
+    const { name, value } = e.target;
+    setNewLot({ ...newLot, [name]: value });
+  };
+
+  // Handle adding a new lot
+  const handleAddLot = () => {
+    if (!newLot.quantity || !newLot.expirationDate) return;
+
+    const lotToAdd = {
+      quantity: parseInt(newLot.quantity, 10),
+      expirationDate: newLot.expirationDate
+    };
+
+    if (editingItem) {
+      setEditingItem({ ...editingItem, lots: [...(editingItem.lots || []), lotToAdd] });
+    } else {
+      setNewInventoryItem({ ...newInventoryItem, lots: [...(newInventoryItem.lots || []), lotToAdd] });
+    }
+    setNewLot({ quantity: '', expirationDate: '' });
+  };
+
+  // Handle removing a lot
+  const handleRemoveLot = (index) => {
+    if (editingItem) {
+      const updatedLots = editingItem.lots.filter((_, i) => i !== index);
+      setEditingItem({ ...editingItem, lots: updatedLots });
+    } else {
+      const updatedLots = newInventoryItem.lots.filter((_, i) => i !== index);
+      setNewInventoryItem({ ...newInventoryItem, lots: updatedLots });
+    }
+  };
+
+  // Handle adding a new location
+  const handleAddLocation = () => {
+    if (!currentLocation.trim()) return;
+
+    if (editingItem) {
+      setEditingItem({ ...editingItem, locations: [...(editingItem.locations || []), currentLocation.trim()] });
+    } else {
+      setNewInventoryItem({ ...newInventoryItem, locations: [...(newInventoryItem.locations || []), currentLocation.trim()] });
+    }
+    setCurrentLocation('');
+  };
+
+  // Handle removing a location
+  const handleRemoveLocation = (index) => {
+    if (editingItem) {
+      const updatedLocations = editingItem.locations.filter((_, i) => i !== index);
+      setEditingItem({ ...editingItem, locations: updatedLocations });
+    } else {
+      const updatedLocations = newInventoryItem.locations.filter((_, i) => i !== index);
+      setNewInventoryItem({ ...newInventoryItem, locations: updatedLocations });
+    }
+  };
+
+  // Handle search for an item to add to inventory
+  const handleSearch = async (e) => {
+    e.preventDefault();
+    if (!searchKeyword.trim()) {
+      setSearchMessage("Please enter a keyword to search.");
+      setSearchResults([]);
+      return;
+    }
+
+    try {
+      const productsPath = `/artifacts/${appId}/users/${userId}/products`;
+      const qByName = query(collection(db, productsPath), where("name", "==", searchKeyword.trim()));
+      const qByItemNumber = query(collection(db, productsPath), where("itemNumber", "==", searchKeyword.trim()));
+      
+      const [nameSnapshot, itemNumberSnapshot] = await Promise.all([getDocs(qByName), getDocs(qByItemNumber)]);
+      
+      const results = [...nameSnapshot.docs, ...itemNumberSnapshot.docs];
+      const uniqueResults = Array.from(new Set(results.map(doc => doc.id)))
+        .map(id => {
+          return results.find(doc => doc.id === id);
+        })
+        .map(doc => ({ id: doc.id, ...doc.data() }));
+
+      setSearchResults(uniqueResults);
+      if (uniqueResults.length > 0) {
+        setSearchMessage(`${uniqueResults.length} items found.`);
+      } else {
+        setSearchMessage("No items found with that keyword.");
+      }
+    } catch (error) {
+      console.error("Error searching for products:", error);
+      setSearchMessage("An error occurred while searching.");
+    }
+  };
+
+  // Handle selecting a search result to auto-populate the inventory form
+  const handleSelectResult = (product) => {
+    setNewInventoryItem({
+      ...newInventoryItem,
+      productId: product.id,
+      name: product.name,
+      itemNumber: product.itemNumber,
+      lots: [],
+      locations: []
+    });
+    setSearchResults([]);
+    setSearchMessage('');
+  };
+
+  // Add a new inventory item
+  const handleAddInventoryItem = async (e) => {
+    e.preventDefault();
+    if (!newInventoryItem.productId || newInventoryItem.lots.length === 0) {
+      console.log("Please select a product and add at least one lot.");
+      return;
+    }
+    const totalQuantity = newInventoryItem.lots.reduce((sum, lot) => sum + parseInt(lot.quantity, 10), 0);
+
+    try {
+      const inventoryPath = `/artifacts/${appId}/users/${userId}/inventory`;
+      await addDoc(collection(db, inventoryPath), { ...newInventoryItem, quantity: totalQuantity, totalSales: 0 });
+      setNewInventoryItem({ productId: '', sku: '', lots: [], locations: [], customerType: 'Regular', onHold: false });
+      setSearchKeyword('');
+      setSearchMessage("Item added to inventory successfully!");
+    } catch (error) {
+      console.error("Error adding inventory item:", error);
+    }
+  };
+
+  // Update an existing inventory item
+  const handleUpdateInventoryItem = async (e) => {
+    e.preventDefault();
+    if (!editingItem.id) return;
+    const { id, ...data } = editingItem;
+    const totalQuantity = data.lots.reduce((sum, lot) => sum + parseInt(lot.quantity, 10), 0);
+    
+    try {
+      const inventoryPath = `/artifacts/${appId}/users/${userId}/inventory/${id}`;
+      await updateDoc(doc(db, inventoryPath), { ...data, quantity: totalQuantity });
+      setEditingItem(null);
+      setSearchMessage("Item updated successfully!");
+    } catch (error) {
+      console.error("Error updating inventory item:", error);
+    }
+  };
+
+  // Handle processing sales data from a text area
+  const handleProcessSales = () => {
+    if (!salesData.trim()) {
+      setSalesMessage("Please paste sales data to process.");
+      setPendingSalesUpdates([]);
+      return;
+    }
+
+    const lines = salesData.trim().split('\n');
+    const updates = [];
+
+    const dataRows = lines.slice(1);
+    
+    dataRows.forEach(line => {
+      const [name, sku, sales] = line.split(',').map(s => s.trim());
+      if (sku && sales) {
+        const currentItem = items.find(item => item.sku === sku);
+        if (currentItem) {
+          let salesQuantity = parseInt(sales, 10);
+          let remainingSales = salesQuantity;
+          let newLots = [...(currentItem.lots || [])];
+          
+          // Sort lots by expiration date (oldest first) for FIFO
+          newLots.sort((a, b) => new Date(a.expirationDate) - new Date(b.expirationDate));
+          
+          for (let i = 0; i < newLots.length && remainingSales > 0; i++) {
+            const lot = newLots[i];
+            if (lot.quantity >= remainingSales) {
+              lot.quantity -= remainingSales;
+              remainingSales = 0;
+            } else {
+              remainingSales -= lot.quantity;
+              lot.quantity = 0;
+            }
+          }
+
+          newLots = newLots.filter(lot => lot.quantity > 0);
+          
+          const newTotalQuantity = newLots.reduce((sum, lot) => sum + lot.quantity, 0);
+          const newTotalSales = (parseInt(currentItem.totalSales, 10) || 0) + salesQuantity;
+
+          updates.push({
+            id: currentItem.id,
+            sku: currentItem.sku,
+            newLots: newLots,
+            newTotalQuantity: newTotalQuantity,
+            newTotalSales: newTotalSales,
+          });
+        }
+      }
+    });
+    
+    setPendingSalesUpdates(updates);
+    if (updates.length > 0) {
+      setSalesMessage("Previewing pending inventory updates. Click 'Apply Updates' to save changes.");
+    } else {
+      setSalesMessage("No matching items found in your inventory for the provided sales data.");
+    }
+  };
+
+  // Apply the pending sales updates to Firestore
+  const handleApplySalesUpdates = async () => {
+    try {
+      for (const update of pendingSalesUpdates) {
+        const inventoryPath = `/artifacts/${appId}/users/${userId}/inventory/${update.id}`;
+        await updateDoc(doc(db, inventoryPath), { lots: update.newLots, quantity: update.newTotalQuantity, totalSales: update.newTotalSales });
+      }
+      setPendingSalesUpdates([]);
+      setSalesData('');
+      setSalesMessage("Inventory successfully updated!");
+    } catch (error) {
+      console.error("Error applying updates:", error);
+      setSalesMessage("Failed to apply updates. Please try again.");
+    }
+  };
+
+  // Handle processing physical count data
+  const handleProcessPhysicalCount = () => {
+    if (!physicalInventoryData.trim()) {
+      setPhysicalInventoryMessage("Please paste physical count data to process.");
+      setPendingPhysicalUpdates([]);
+      return;
+    }
+
+    const lines = physicalInventoryData.trim().split('\n');
+    const updates = [];
+
+    lines.forEach(line => {
+      const [sku, quantity] = line.split(',').map(s => s.trim());
+      if (sku && quantity) {
+        const currentItem = items.find(item => item.sku === sku);
+        if (currentItem) {
+          const physicalCount = parseInt(quantity, 10);
+          const systemCount = currentItem.quantity;
+          const discrepancy = physicalCount - systemCount;
+          
+          if (discrepancy !== 0) {
+            updates.push({
+              id: currentItem.id,
+              sku: currentItem.sku,
+              physicalCount,
+              systemCount,
+              discrepancy,
+            });
+          }
+        }
+      }
+    });
+    
+    setPendingPhysicalUpdates(updates);
+    if (updates.length > 0) {
+      setPhysicalInventoryMessage("Discrepancies found. Click 'Apply Physical Updates' to sync inventory.");
+    } else {
+      setPhysicalInventoryMessage("No discrepancies found. Inventory is in sync.");
+    }
+  };
+
+  // Apply the pending physical count updates
+  const handleApplyPhysicalUpdates = async () => {
+    try {
+      for (const update of pendingPhysicalUpdates) {
+        const inventoryPath = `/artifacts/${appId}/users/${userId}/inventory/${update.id}`;
+        
+        // This is a physical count, so we'll replace all lots with a single one.
+        // It's a simplification, but effective for a basic count.
+        const updatedLots = [{ quantity: update.physicalCount, expirationDate: new Date().toISOString().slice(0, 10) }];
+        
+        await updateDoc(doc(db, inventoryPath), { quantity: update.physicalCount, lots: updatedLots });
+      }
+      setPendingPhysicalUpdates([]);
+      setPhysicalInventoryData('');
+      setPhysicalInventoryMessage("Physical count successfully updated and inventory is in sync.");
+    } catch (error) {
+      console.error("Error applying physical updates:", error);
+      setPhysicalInventoryMessage("Failed to apply physical updates. Please try again.");
+    }
+  };
+
+  // Handle processing a bulk product list
+  const handleProcessProductMasterData = () => {
+    if (!productMasterData.trim()) {
+      setProductMasterMessage("Please paste product data to process.");
+      setPendingProductAdds([]);
+      return;
+    }
+
+    const lines = productMasterData.trim().split('\n');
+    const productsToAdd = [];
+
+    lines.forEach(line => {
+      const [name, itemNumber, productType, casesPerPallet, shelfLifeInDays, targetLabel, countryLabel] = line.split(',').map(s => s.trim());
+      if (name && itemNumber) {
+        productsToAdd.push({
+          name,
+          itemNumber,
+          productType: productType || 'Ambient',
+          casesPerPallet: casesPerPallet || '',
+          shelfLifeInDays: shelfLifeInDays || '',
+          targetLabel: targetLabel || 'Regular Customer',
+          countryLabel: countryLabel || 'US'
+        });
+      }
+    });
+
+    setPendingProductAdds(productsToAdd);
+    if (productsToAdd.length > 0) {
+      setProductMasterMessage(`Found ${productsToAdd.length} products to add. Click 'Add Products' to save them.`);
+    } else {
+      setProductMasterMessage("No valid products found in the provided data.");
+    }
+  };
+
+  // Apply bulk product additions to Firestore
+  const handleAddBulkProducts = async () => {
+    try {
+      const productsPath = `/artifacts/${appId}/users/${userId}/products`;
+      for (const product of pendingProductAdds) {
+        await addDoc(collection(db, productsPath), product);
+      }
+      setPendingProductAdds([]);
+      setProductMasterData('');
+      setProductMasterMessage("All products added successfully!");
+    } catch (error) {
+      console.error("Error adding bulk products:", error);
+      setProductMasterMessage("Failed to add products. Please try again.");
+    }
+  };
+
+  // Delete an item
+  const handleDeleteItem = async (id) => {
+    try {
+      const inventoryPath = `/artifacts/${appId}/users/${userId}/inventory/${id}`;
+      await deleteDoc(doc(db, inventoryPath));
+      setSearchMessage("Item deleted successfully.");
+    } catch (error) {
+      console.error("Error deleting document:", error);
+    }
+  };
+  
+  // Helper function to get product details by ID
+  const getProductDetails = (productId) => {
+    return products.find(p => p.id === productId) || {};
+  };
+
+  // Helper function to filter items
+  const getFilteredItems = () => {
+    let filtered = items;
+    if (filterOnHold !== 'All') {
+      const onHoldBool = filterOnHold === 'true';
+      filtered = filtered.filter(item => item.onHold === onHoldBool);
+    }
+    if (filterProductType !== 'All') {
+        const productIds = products.filter(p => p.productType === filterProductType).map(p => p.id);
+        filtered = filtered.filter(item => productIds.includes(item.productId));
+    }
+    return filtered;
+  };
+
+  // Helper function to check if a lot is close to expiration based on shelf life and customer type
+  const isCloseToExpiring = (item) => {
+    const product = getProductDetails(item.productId);
+    if (!product || !product.shelfLifeInDays || !item.lots || item.lots.length === 0) {
+      return false;
+    }
+
+    const oldestLot = item.lots.sort((a, b) => new Date(a.expirationDate) - new Date(b.expirationDate))[0];
+    const shelfLifeInDays = parseInt(product.shelfLifeInDays, 10);
+    const expirationDate = new Date(oldestLot.expirationDate);
+    const today = new Date();
+
+    const daysRemaining = Math.ceil((expirationDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    
+    // Standard customer rule: less than 75% shelf life remaining
+    let cutoffDays = shelfLifeInDays * 0.25;
+
+    // Walmart refrigerated rule: additional 30-day grace period
+    if (item.customerType === 'Walmart' && product.productType === 'Refrigerated') {
+      cutoffDays += 30;
+    }
+
+    return daysRemaining <= cutoffDays;
+  };
+
+  // Helper function to get the expiration date of the oldest lot
+  const getOldestExpirationDate = (lots) => {
+    if (!lots || lots.length === 0) return 'N/A';
+    const sortedLots = [...lots].sort((a, b) => new Date(a.expirationDate) - new Date(b.expirationDate))[0];
+    return sortedLots.expirationDate;
+  };
+
+  // Function to prepare data for printing
+  const getPrintableData = () => {
+    // Combine inventory and product data
+    const combinedData = items.map(item => {
+        const product = getProductDetails(item.productId);
+        const pallets = product.casesPerPallet > 0 ? Math.ceil(item.quantity / product.casesPerPallet) : 'N/A';
+        return { ...item, productName: product.name, itemNumber: product.itemNumber, productType: product.productType, pallets, targetLabel: product.targetLabel, countryLabel: product.countryLabel };
+    });
+
+    // Sort by Product Type, then Item Number, then BBD
+    const sortedData = combinedData.sort((a, b) => {
+        if (a.productType < b.productType) return -1;
+        if (a.productType > b.productType) return 1;
+
+        if (a.itemNumber < b.itemNumber) return -1;
+        if (a.itemNumber > b.itemNumber) return 1;
+        
+        const aOldestBBD = getOldestExpirationDate(a.lots);
+        const bOldestBBD = getOldestExpirationDate(b.lots);
+        
+        if (aOldestBBD === 'N/A') return 1;
+        if (bOldestBBD === 'N/A') return -1;
+        
+        return new Date(aOldestBBD) - new Date(bOldestBBD);
+    });
+
+    return sortedData;
+  };
+
+  // Styles for the components
+  const formStyles = "p-4 bg-white rounded-lg shadow-md";
+  const inputStyles = "w-full p-2 mb-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500";
+  const locationInputGroupStyles = "flex items-center space-x-2 mb-2";
+  const lotInputGroupStyles = "flex space-x-2 mb-2";
+  const buttonStyles = "w-full p-2 mt-2 font-bold text-white bg-blue-500 rounded-md hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500";
+  const addLotButtonStyles = "px-4 py-2 font-bold text-white bg-blue-400 rounded-md hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-400";
+  const removeLocationButtonStyles = "text-red-500 hover:text-red-700";
+  const removeLotButtonStyles = "text-red-500 hover:text-red-700";
+  const searchButtonStyles = "w-full p-2 mt-2 font-bold text-white bg-green-500 rounded-md hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-green-500";
+  const salesButtonStyles = "w-full p-2 mt-2 font-bold text-white bg-purple-500 rounded-md hover:bg-purple-600 focus:outline-none focus:ring-2 focus:ring-purple-500";
+  const applyUpdatesButtonStyles = "w-full p-2 mt-2 font-bold text-white bg-red-500 rounded-md hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-500";
+  const physicalButtonStyles = "w-full p-2 mt-2 font-bold text-white bg-teal-500 rounded-md hover:bg-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-500";
+  const physicalApplyButtonStyles = "w-full p-2 mt-2 font-bold text-white bg-cyan-500 rounded-md hover:bg-cyan-600 focus:outline-none focus:ring-2 focus:ring-cyan-500";
+  const filterButtonStyles = (active) => `px-4 py-2 font-bold rounded-md ${active ? 'bg-indigo-500 text-white' : 'bg-gray-200 text-gray-800 hover:bg-gray-300'}`;
+  const reportButtonStyles = (active) => `px-4 py-2 font-bold rounded-md ${active ? 'bg-gray-800 text-white' : 'bg-gray-300 text-gray-800 hover:bg-gray-400'}`;
+  const tableContainerStyles = "bg-white rounded-lg shadow-md overflow-hidden";
+  const tableStyles = "min-w-full divide-y divide-gray-200";
+  const thStyles = "px-6 py-3 text-xs font-bold tracking-wider text-left text-gray-500 uppercase";
+  const tdStyles = "px-6 py-4 whitespace-nowrap";
+  const editButtonStyles = "text-indigo-600 hover:text-indigo-900";
+  const deleteButtonStyles = "text-red-600 hover:text-red-900 ml-4";
+  const containerStyles = "p-6 bg-gray-100 min-h-screen font-sans antialiased";
+  const headerStyles = "text-2xl font-bold mb-6 text-center text-gray-800";
+  const tableWrapperStyles = "mt-8";
+  
+  const filteredItems = getFilteredItems();
+  const lowStockItems = items.filter(item => item.quantity <= 10);
+  const shortDateItems = items.filter(item => isCloseToExpiring(item));
+
+  // Check if Firebase is ready before rendering the UI
+  if (!isAuthReady) {
+    return <div className="flex items-center justify-center p-8 text-gray-500">Loading...</div>;
+  }
+  
+  return (
+    <div className={containerStyles}>
+      <h1 className={headerStyles}>Inventory Management</h1>
+      
+      {/* Dashboard & Reports Navigation */}
+      <div className="flex justify-center space-x-2 mb-6">
+        <button onClick={() => setActiveReport('Inventory')} className={reportButtonStyles(activeReport === 'Inventory')}>Inventory</button>
+        <button onClick={() => setActiveReport('LowStock')} className={reportButtonStyles(activeReport === 'LowStock')}>Low Stock Report</button>
+        <button onClick={() => setActiveReport('ShortDate')} className={reportButtonStyles(activeReport === 'ShortDate')}>Short Date Report</button>
+        <button onClick={() => setActiveReport('ProductMaster')} className={reportButtonStyles(activeReport === 'ProductMaster')}>Product Master</button>
+        <button onClick={() => setActiveReport('PrintableInventory')} className={reportButtonStyles(activeReport === 'PrintableInventory')}>Printable Inventory</button>
+      </div>
+
+      {activeReport === 'ProductMaster' && (
+        <>
+          <h2 className="text-xl font-bold mb-4 text-center text-gray-800">Add New Product</h2>
+          <form onSubmit={handleAddProduct} className={formStyles}>
+            <input
+              type="text"
+              name="name"
+              placeholder="Item Name"
+              value={newProduct.name}
+              onChange={handleProductInputChange}
+              required
+              className={inputStyles}
+            />
+            <input
+              type="text"
+              name="itemNumber"
+              placeholder="Item Number"
+              value={newProduct.itemNumber}
+              onChange={handleProductInputChange}
+              required
+              className={inputStyles}
+            />
+            <label className="block mb-2 text-sm font-medium text-gray-700">Product Type</label>
+            <select
+              name="productType"
+              value={newProduct.productType}
+              onChange={handleProductInputChange}
+              className={inputStyles}
+            >
+              <option value="Ambient">Ambient</option>
+              <option value="Refrigerated">Refrigerated</option>
+              <option value="Frozen">Frozen</option>
+            </select>
+            <input
+              type="number"
+              name="casesPerPallet"
+              placeholder="Cases per Pallet"
+              value={newProduct.casesPerPallet}
+              onChange={handleProductInputChange}
+              className={inputStyles}
+            />
+            <input
+              type="number"
+              name="shelfLifeInDays"
+              placeholder="Shelf Life (in days)"
+              value={newProduct.shelfLifeInDays}
+              onChange={handleProductInputChange}
+              required
+              className={inputStyles}
+            />
+            <label className="block mb-2 text-sm font-medium text-gray-700">Target Label</label>
+            <select
+              name="targetLabel"
+              value={newProduct.targetLabel}
+              onChange={handleProductInputChange}
+              className={inputStyles}
+            >
+              <option value="Regular Customer">Regular Customer</option>
+              <option value="Target">Target</option>
+            </select>
+            <label className="block mb-2 text-sm font-medium text-gray-700">Country Label</label>
+            <select
+              name="countryLabel"
+              value={newProduct.countryLabel}
+              onChange={handleProductInputChange}
+              className={inputStyles}
+            >
+              <option value="US">US</option>
+              <option value="Canada">Canada</option>
+            </select>
+            <button type="submit" className={buttonStyles}>
+              Add Product
+            </button>
+            {productMasterMessage && <p className="text-center text-sm mt-4">{productMasterMessage}</p>}
+          </form>
+
+          <h2 className="text-xl font-bold mt-8 mb-4 text-center text-gray-800">Bulk Add Products</h2>
+          <div className={formStyles}>
+            <p className="text-sm text-gray-600 mb-2">Paste a list of products here. Format: "Item Name,Item Number,Product Type,Cases per Pallet,Shelf Life,Target Label,Country Label" per line.</p>
+            <textarea
+              className={inputStyles}
+              rows="5"
+              placeholder="Item 1,ABC-123,Ambient,50,365,Regular Customer,US&#10;Item 2,DEF-456,Refrigerated,40,90,Target,Canada"
+              value={productMasterData}
+              onChange={(e) => setProductMasterData(e.target.value)}
+            ></textarea>
+            <button type="button" onClick={handleProcessProductMasterData} className={salesButtonStyles}>
+              Process Data
+            </button>
+
+            {pendingProductAdds.length > 0 && (
+              <div className="mt-4">
+                <h4 className="font-bold mb-2">Pending Products</h4>
+                <ul className="divide-y divide-gray-200">
+                  {pendingProductAdds.map((product, index) => (
+                    <li key={index} className="py-2 text-sm">
+                      <p className="font-semibold">{product.name} ({product.itemNumber})</p>
+                      <p>Type: {product.productType}, Cases/Pallet: {product.casesPerPallet}, Shelf Life: {product.shelfLifeInDays} days</p>
+                      <p>Label: {product.targetLabel}, Country: {product.countryLabel}</p>
+                    </li>
+                  ))}
+                </ul>
+                <button type="button" onClick={handleAddBulkProducts} className={applyUpdatesButtonStyles}>
+                  Add Products
+                </button>
+              </div>
+            )}
+          </div>
+
+          <h2 className="text-xl font-bold mt-8 mb-4 text-center text-gray-800">Product Master List</h2>
+          <div className={tableContainerStyles}>
+            <table className={tableStyles}>
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className={thStyles}>Item Name</th>
+                  <th className={thStyles}>Item Number</th>
+                  <th className={thStyles}>Product Type</th>
+                  <th className={thStyles}>Cases per Pallet</th>
+                  <th className={thStyles}>Shelf Life (days)</th>
+                  <th className={thStyles}>Target Label</th>
+                  <th className={thStyles}>Country Label</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {products.length > 0 ? (
+                  products.map((product) => (
+                    <tr key={product.id}>
+                      <td className={tdStyles}>{product.name}</td>
+                      <td className={tdStyles}>{product.itemNumber}</td>
+                      <td className={tdStyles}>{product.productType}</td>
+                      <td className={tdStyles}>{product.casesPerPallet || 'N/A'}</td>
+                      <td className={tdStyles}>{product.shelfLifeInDays || 'N/A'}</td>
+                      <td className={tdStyles}>{product.targetLabel}</td>
+                      <td className={tdStyles}>{product.countryLabel}</td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan="7" className="py-4 text-center text-gray-500">No products in master list. Add one above.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {activeReport === 'Inventory' && (
+        <>
+          <h2 className="text-xl font-bold mb-4 text-center text-gray-800">Add/Update Inventory</h2>
+          
+          {/* Search Bar for Product Master */}
+          <div className="flex flex-col items-center space-y-2 mb-4">
+            <input
+              type="text"
+              placeholder="Search by name or item number..."
+              value={searchKeyword}
+              onChange={(e) => setSearchKeyword(e.target.value)}
+              className={inputStyles + " flex-grow"}
+            />
+            <button onClick={handleSearch} className={searchButtonStyles}>
+              Search
+            </button>
+          </div>
+
+          {searchMessage && <p className="text-center text-sm mb-4">{searchMessage}</p>}
+          
+          {/* Search Results Display */}
+          {searchResults.length > 0 && (
+            <div className="bg-white rounded-lg shadow-md p-4 mb-4">
+              <h3 className="font-bold text-lg mb-2">Search Results</h3>
+              <ul className="divide-y divide-gray-200">
+                {searchResults.map((product) => (
+                  <li key={product.id} className="py-2 cursor-pointer hover:bg-gray-50" onClick={() => handleSelectResult(product)}>
+                    <p className="font-semibold">{product.name} ({product.itemNumber})</p>
+                    <p className="text-sm text-gray-500">Type: {product.productType}, Cases/Pallet: {product.casesPerPallet || 'N/A'}</p>
+                    <p className="text-sm text-gray-500">Label: {product.targetLabel}, Country: {product.countryLabel}</p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Add/Edit Form */}
+          <form onSubmit={editingItem ? handleUpdateInventoryItem : handleAddInventoryItem} className={formStyles}>
+            <input
+              type="text"
+              name="name"
+              placeholder="Item Name (auto-populated)"
+              value={editingItem ? getProductDetails(editingItem.productId).name : newInventoryItem.name}
+              readOnly
+              className={inputStyles + " bg-gray-100"}
+            />
+            <input
+              type="text"
+              name="itemNumber"
+              placeholder="Item Number (auto-populated)"
+              value={editingItem ? getProductDetails(editingItem.productId).itemNumber : newInventoryItem.itemNumber}
+              readOnly
+              className={inputStyles + " bg-gray-100"}
+            />
+            <input
+              type="text"
+              name="sku"
+              placeholder="SKU"
+              value={editingItem ? editingItem.sku : newInventoryItem.sku}
+              onChange={handleInventoryInputChange}
+              required
+              className={inputStyles}
+            />
+
+            {/* Lot Management */}
+            <h4 className="font-bold text-md mb-2">Manage Lots (Cases & BBD)</h4>
+            <div className={lotInputGroupStyles}>
+              <input
+                type="number"
+                name="quantity"
+                placeholder="Cases"
+                value={newLot.quantity}
+                onChange={handleLotInputChange}
+                className={inputStyles + " m-0 flex-grow"}
+              />
+              <input
+                type="date"
+                name="expirationDate"
+                value={newLot.expirationDate}
+                onChange={handleLotInputChange}
+                className={inputStyles + " m-0 flex-grow"}
+              />
+              <button type="button" onClick={handleAddLot} className={addLotButtonStyles}>
+                Add Lot
+              </button>
+            </div>
+            <div className="mb-4">
+              {(editingItem ? editingItem.lots : newInventoryItem.lots).map((lot, index) => (
+                <span key={index} className="inline-block bg-gray-200 rounded-full px-3 py-1 text-sm font-semibold text-gray-700 mr-2 mb-2">
+                  Qty: {lot.quantity}, Exp: {lot.expirationDate}
+                  <button type="button" onClick={() => handleRemoveLot(index)} className={removeLotButtonStyles + " ml-2"}>
+                    &times;
+                  </button>
+                </span>
+              ))}
+            </div>
+            
+            {/* Multi-location input */}
+            <label className="block mb-2 text-sm font-medium text-gray-700">Storage Locations</label>
+            <div className={locationInputGroupStyles}>
+              <input
+                type="text"
+                placeholder="Add new location..."
+                value={currentLocation}
+                onChange={(e) => setCurrentLocation(e.target.value)}
+                className={inputStyles + " m-0 flex-grow"}
+              />
+              <button type="button" onClick={handleAddLocation} className={addLotButtonStyles}>
+                Add
+              </button>
+            </div>
+            <div className="mb-4">
+              {(editingItem ? editingItem.locations : newInventoryItem.locations).map((loc, index) => (
+                <span key={index} className="inline-block bg-gray-200 rounded-full px-3 py-1 text-sm font-semibold text-gray-700 mr-2 mb-2">
+                  {loc}
+                  <button type="button" onClick={() => handleRemoveLocation(index)} className={removeLocationButtonStyles + " ml-2"}>
+                    &times;
+                  </button>
+                </span>
+              ))}
+            </div>
+
+            <label className="block mb-2 text-sm font-medium text-gray-700">Customer Type</label>
+            <select
+              name="customerType"
+              value={editingItem ? editingItem.customerType : newInventoryItem.customerType}
+              onChange={handleInventoryInputChange}
+              className={inputStyles}
+            >
+              <option value="Regular">Regular Customer</option>
+              <option value="Walmart">Walmart</option>
+            </select>
+            <div className="flex items-center mb-2">
+              <input
+                type="checkbox"
+                name="onHold"
+                checked={editingItem ? editingItem.onHold : newInventoryItem.onHold}
+                onChange={handleInventoryInputChange}
+                className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500"
+              />
+              <label htmlFor="onHold" className="ml-2 text-sm font-medium text-gray-700">On Hold</label>
+            </div>
+
+            <button type="submit" className={buttonStyles}>
+              {editingItem ? 'Update Item' : 'Add Item'}
+            </button>
+            {editingItem && (
+              <button
+                type="button"
+                onClick={() => { setEditingItem(null); setSearchMessage(''); }}
+                className="w-full p-2 mt-2 font-bold text-white bg-gray-500 rounded-md hover:bg-gray-600"
+              >
+                Cancel Edit
+              </button>
+            )}
+          </form>
+
+          <div className="mt-8">
+            <h2 className="text-xl font-bold mb-4 text-center text-gray-800">Process Weekly Sales</h2>
+            <div className={formStyles}>
+              <p className="text-sm text-gray-600 mb-2">Paste your weekly sales data below. The format should be "Item Name, SKU, This Weeks Sales". The first row will be ignored.</p>
+              <textarea
+                className={inputStyles}
+                rows="5"
+                placeholder="Item Name,SKU,This Weeks Sales&#10;Widget,WID-123,50&#10;Gadget,GAD-456,20"
+                value={salesData}
+                onChange={(e) => setSalesData(e.target.value)}
+              ></textarea>
+              <button onClick={handleProcessSales} className={salesButtonStyles}>
+                Process Sales
+              </button>
+              
+              {salesMessage && <p className="text-center text-sm mt-4">{salesMessage}</p>}
+
+              {pendingSalesUpdates.length > 0 && (
+                <div className="mt-4">
+                  <h4 className="font-bold mb-2">Pending Updates</h4>
+                  <ul className="divide-y divide-gray-200">
+                    {pendingSalesUpdates.map(update => (
+                      <li key={update.id} className="py-2 text-sm">
+                        <p className="font-semibold">{update.sku} Total Sales: {update.salesQuantity}</p>
+                        <p className="mt-1 font-semibold">New Inventory Breakdown:</p>
+                        {update.newLots.map((lot, index) => (
+                          <p key={index} className="ml-2 text-xs">Lot {index + 1}: Qty {lot.quantity}, Exp: {lot.expirationDate}</p>
+                        ))}
+                      </li>
+                    ))}
+                  </ul>
+                  <button onClick={handleApplySalesUpdates} className={applyUpdatesButtonStyles}>
+                    Apply Updates
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+          
+          <div className="mt-8">
+            <h2 className="text-xl font-bold mb-4 text-center text-gray-800">Update Physical Inventory</h2>
+            <div className={formStyles}>
+              <p className="text-sm text-gray-600 mb-2">Paste your physical count data below. The format should be "SKU, Quantity" without a header row.</p>
+              <textarea
+                className={inputStyles}
+                rows="5"
+                placeholder="SKU, Quantity&#10;WID-123, 150&#10;GAD-456, 30"
+                value={physicalInventoryData}
+                onChange={(e) => setPhysicalInventoryData(e.target.value)}
+              ></textarea>
+              <button onClick={handleProcessPhysicalCount} className={physicalButtonStyles}>
+                Process Physical Count
+              </button>
+
+              {physicalInventoryMessage && <p className="text-center text-sm mt-4">{physicalInventoryMessage}</p>}
+
+              {pendingPhysicalUpdates.length > 0 && (
+                <div className="mt-4">
+                  <h4 className="font-bold mb-2">Discrepancies Found</h4>
+                  <ul className="divide-y divide-gray-200">
+                    {pendingPhysicalUpdates.map(update => (
+                      <li key={update.id} className="py-2 text-sm">
+                        <p className="font-semibold">{update.sku}</p>
+                        <p>System Count: {update.systemCount}</p>
+                        <p>Physical Count: {update.physicalCount}</p>
+                        <p>Discrepancy: {update.discrepancy}</p>
+                      </li>
+                    ))}
+                  </ul>
+                  <button onClick={handleApplyPhysicalUpdates} className={physicalApplyButtonStyles}>
+                    Apply Physical Updates
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Inventory Table */}
+          <div className={tableWrapperStyles}>
+            <div className="flex flex-wrap items-center space-x-2 mb-4">
+              <p className="font-bold">Show:</p>
+              <button onClick={() => setFilterOnHold('All')} className={filterButtonStyles(filterOnHold === 'All')}>All Status</button>
+              <button onClick={() => setFilterOnHold('true')} className={filterButtonStyles(filterOnHold === 'true')}>On Hold</button>
+              <button onClick={() => setFilterProductType('All')} className={filterButtonStyles(filterProductType === 'All')}>All Types</button>
+              <button onClick={() => setFilterProductType('Ambient')} className={filterButtonStyles(filterProductType === 'Ambient')}>Ambient</button>
+              <button onClick={() => setFilterProductType('Refrigerated')} className={filterButtonStyles(filterProductType === 'Refrigerated')}>Refrigerated</button>
+              <button onClick={() => setFilterProductType('Frozen')} className={filterButtonStyles(filterProductType === 'Frozen')}>Frozen</button>
+              <button onClick={() => { setFilterOnHold('All'); setFilterProductType('All'); }} className={filterButtonStyles(filterOnHold === 'All' && filterProductType === 'All')}>Reset Filters</button>
+            </div>
+            {loading ? (
+              <div className="flex items-center justify-center p-8 text-gray-500">Loading inventory...</div>
+            ) : (
+              <div className={tableContainerStyles}>
+                <table className={tableStyles}>
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className={thStyles}>Item Name</th>
+                      <th className={thStyles}>Item Number</th>
+                      <th className={thStyles}>Product Type</th>
+                      <th className={thStyles}>Target Label</th>
+                      <th className={thStyles}>Country Label</th>
+                      <th className={thStyles}>SKU</th>
+                      <th className={thStyles}>Cases</th>
+                      <th className={thStyles}>Pallets</th>
+                      <th className={thStyles}>Total Sales</th>
+                      <th className={thStyles}>Locations</th>
+                      <th className={thStyles}>Oldest Exp. Date</th>
+                      <th className={thStyles}>Status</th>
+                      <th className={thStyles}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {items.length > 0 ? (
+                      items.map((item) => {
+                        const product = getProductDetails(item.productId);
+                        const pallets = product.casesPerPallet > 0 ? Math.ceil(item.quantity / product.casesPerPallet) : 'N/A';
+                        return (
+                          <tr key={item.id} className={isCloseToExpiring(item) ? 'bg-yellow-100' : ''}>
+                            <td className={tdStyles}>{product.name}</td>
+                            <td className={tdStyles}>{product.itemNumber}</td>
+                            <td className={tdStyles}>{product.productType}</td>
+                            <td className={tdStyles}>{product.targetLabel}</td>
+                            <td className={tdStyles}>{product.countryLabel}</td>
+                            <td className={tdStyles}>{item.sku}</td>
+                            <td className={tdStyles}>{item.quantity}</td>
+                            <td className={tdStyles}>{pallets}</td>
+                            <td className={tdStyles}>{item.totalSales || 0}</td>
+                            <td className={tdStyles}>{item.locations ? item.locations.join(', ') : 'N/A'}</td>
+                            <td className={tdStyles}>{getOldestExpirationDate(item.lots)}</td>
+                            <td className={tdStyles}>
+                              {item.onHold && <span className="bg-red-200 text-red-800 text-xs font-semibold px-2 py-1 rounded-full">On Hold</span>}
+                              {isCloseToExpiring(item) && <span className="bg-yellow-200 text-yellow-800 text-xs font-semibold px-2 py-1 rounded-full ml-1">Short Date</span>}
+                              {item.quantity <= 10 && <span className="bg-orange-200 text-orange-800 text-xs font-semibold px-2 py-1 rounded-full ml-1">Low Stock</span>}
+                            </td>
+                            <td className={tdStyles}>
+                              <button onClick={() => setEditingItem(item)} className={editButtonStyles}>Edit</button>
+                              <button onClick={() => handleDeleteItem(item.id)} className={deleteButtonStyles}>Delete</button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan="13" className="py-4 text-center text-gray-500">No items in inventory.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {activeReport === 'LowStock' && (
+        <div className={tableWrapperStyles}>
+          <h2 className="text-xl font-bold mb-4 text-center text-gray-800">Low Stock Report</h2>
+          <div className={tableContainerStyles}>
+            <table className={tableStyles}>
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className={thStyles}>Item Name</th>
+                  <th className={thStyles}>SKU</th>
+                  <th className={thStyles}>Quantity</th>
+                  <th className={thStyles}>Locations</th>
+                  <th className={thStyles}>Status</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {lowStockItems.length > 0 ? (
+                  lowStockItems.map((item) => (
+                    <tr key={item.id}>
+                      <td className={tdStyles}>{getProductDetails(item.productId).name}</td>
+                      <td className={tdStyles}>{item.sku}</td>
+                      <td className={tdStyles}>{item.quantity}</td>
+                      <td className={tdStyles}>{item.locations ? item.locations.join(', ') : 'N/A'}</td>
+                      <td className={tdStyles}>
+                        <span className="bg-orange-200 text-orange-800 text-xs font-semibold px-2 py-1 rounded-full">Low Stock</span>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan="5" className="py-4 text-center text-gray-500">No items are currently low in stock.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {activeReport === 'ShortDate' && (
+        <div className={tableWrapperStyles}>
+          <h2 className="text-xl font-bold mb-4 text-center text-gray-800">Short Date Report</h2>
+          <div className={tableContainerStyles}>
+            <table className={tableStyles}>
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className={thStyles}>Item Name</th>
+                  <th className={thStyles}>SKU</th>
+                  <th className={thStyles}>Quantity</th>
+                  <th className={thStyles}>Expiration Date</th>
+                  <th className={thStyles}>Locations</th>
+                  <th className={thStyles}>Customer Type</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {shortDateItems.length > 0 ? (
+                  shortDateItems.map((item) => (
+                    item.lots.filter(lot => isCloseToExpiring(item)).map((lot, index) => (
+                      <tr key={`${item.id}-${index}`}>
+                        <td className={tdStyles}>{getProductDetails(item.productId).name}</td>
+                        <td className={tdStyles}>{item.sku}</td>
+                        <td className={tdStyles}>{lot.quantity}</td>
+                        <td className={tdStyles}>{lot.expirationDate}</td>
+                        <td className={tdStyles}>{item.locations ? item.locations.join(', ') : 'N/A'}</td>
+                        <td className={tdStyles}>{item.customerType}</td>
+                      </tr>
+                    ))
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan="6" className="py-4 text-center text-gray-500">No items are currently nearing their expiration date.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {activeReport === 'PrintableInventory' && (
+        <div className="printable-report-container">
+          <div className="flex justify-between items-center mb-6 no-print">
+            <h2 className="text-xl font-bold">Printable Inventory List</h2>
+            <button onClick={() => window.print()} className="px-4 py-2 font-bold text-white bg-blue-500 rounded-md hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
+              Print
+            </button>
+          </div>
+          <div className={tableContainerStyles}>
+            <table className={tableStyles}>
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className={thStyles}>Item Name</th>
+                  <th className={thStyles}>Item Number</th>
+                  <th className={thStyles}>Product Type</th>
+                  <th className={thStyles}>Target Label</th>
+                  <th className={thStyles}>Country Label</th>
+                  <th className={thStyles}>SKU</th>
+                  <th className={thStyles}>Cases</th>
+                  <th className={thStyles}>Pallets</th>
+                  <th className={thStyles}>Oldest Exp. Date</th>
+                  <th className={thStyles}>Locations</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {getPrintableData().length > 0 ? (
+                  getPrintableData().map((item) => (
+                    <tr key={item.id}>
+                      <td className={tdStyles}>{item.productName}</td>
+                      <td className={tdStyles}>{item.itemNumber}</td>
+                      <td className={tdStyles}>{item.productType}</td>
+                      <td className={tdStyles}>{item.targetLabel}</td>
+                      <td className={tdStyles}>{item.countryLabel}</td>
+                      <td className={tdStyles}>{item.sku}</td>
+                      <td className={tdStyles}>{item.quantity}</td>
+                      <td className={tdStyles}>{item.pallets}</td>
+                      <td className={tdStyles}>{getOldestExpirationDate(item.lots)}</td>
+                      <td className={tdStyles}>{item.locations ? item.locations.join(', ') : 'N/A'}</td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan="10" className="py-4 text-center text-gray-500">No items in inventory to print.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <style>
+            {`
+            @media print {
+              body * {
+                visibility: hidden;
+              }
+              .printable-report-container, .printable-report-container * {
+                visibility: visible;
+              }
+              .no-print {
+                display: none;
+              }
+              .printable-report-container {
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100%;
+              }
+            }
+            `}
+          </style>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default App;
