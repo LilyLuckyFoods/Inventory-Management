@@ -4,16 +4,7 @@ import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged }
 import { getFirestore, doc, collection, onSnapshot, addDoc, updateDoc, deleteDoc, query, where, getDocs } from 'firebase/firestore';
 
 // Initialize Firebase
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
-const firebaseConfig = {
-  apiKey: "AIzaSyAh_GigZUcwiZyHLedIwaAMFGhBQ83ayVw",
-  authDomain: "inventory-database-5695c.firebaseapp.com",
-  projectId: "inventory-database-5695c",
-  storageBucket: "inventory-database-5695c.firebasestorage.app",
-  messagingSenderId: "598833603680",
-  appId: "1:598833603680:web:cda4264f70a49b7c804f05",
-  measurementId: "G-DL3YVHLXHQ"
-};
+const firebaseConfig = JSON.parse(__firebase_config);
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
