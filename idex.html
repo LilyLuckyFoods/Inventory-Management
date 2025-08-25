@@ -1,1 +1,434 @@
+import StockPilotApp from '@/components/stockpilot-app';
 
+export default function Home() {
+  return (
+    <main>
+      <StockPilotApp />
+    </main>
+  );
+}
+
+"use client";
+
+import React, { useState, useEffect } from 'react';
+import {
+  Sidebar,
+  SidebarProvider,
+  SidebarInset,
+  SidebarHeader,
+  SidebarTrigger,
+  SidebarContent,
+  SidebarMenu,
+  SidebarMenuItem,
+  SidebarMenuButton,
+  SidebarFooter,
+} from '@/components/ui/sidebar';
+import {
+  LayoutDashboard,
+  Boxes,
+  Book,
+  FileText,
+  Bot,
+  Package,
+  FilePieChart,
+  Printer,
+  Settings,
+  HelpCircle,
+  LogIn,
+  LogOut
+} from 'lucide-react';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Skeleton } from '@/components/ui/skeleton';
+import { useAuth } from '@/hooks/use-auth';
+import type { Product, InventoryItem } from '@/types';
+import { listenToCollection } from '@/lib/firestore';
+import DashboardView from '@/components/dashboard-view';
+import InventoryView from '@/components/inventory-view';
+import ProductsView from '@/components/products-view';
+import ReportsView from '@/components/reports-view';
+import PrintableReport from '@/components/printable-report';
+import RecommendationsDialog from '@/components/recommendations-dialog';
+import { Button } from './ui/button';
+
+type View = 'dashboard' | 'inventory' | 'products' | 'reports' | 'printable';
+
+const StockPilotApp = () => {
+  const { user, loading: authLoading, signIn, signOut } = useAuth();
+  const [activeView, setActiveView] = useState<View>('dashboard');
+  const [products, setProducts] = useState<Product[]>([]);
+  const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [loadingData, setLoadingData] = useState(true);
+  const [isRecommendationsOpen, setIsRecommendationsOpen] = useState(false);
+  const companyId = 'shared_company_id'; // Using a shared ID for all users
+
+  useEffect(() => {
+    if (user) {
+      setLoadingData(true);
+      const unsubProducts = listenToCollection<Product>(companyId, 'products', setProducts);
+      const unsubInventory = listenToCollection<InventoryItem>(companyId, 'inventory', (data) => {
+        setInventory(data);
+        setLoadingData(false);
+      });
+
+      return () => {
+        unsubProducts();
+        unsubInventory();
+      };
+    } else {
+        // If no user, clear data
+        setProducts([]);
+        setInventory([]);
+        setLoadingData(false);
+    }
+  }, [user]);
+
+  const renderView = () => {
+    if (authLoading || (user && loadingData)) {
+        return <div className="p-8"><Skeleton className="h-[400px] w-full" /></div>;
+    }
+
+    if (!user) {
+        return (
+            <div className="flex flex-col items-center justify-center h-[80vh] gap-4">
+                <Bot className="w-24 h-24 text-primary" />
+                <h1 className="text-2xl font-bold">Welcome to StockPilot</h1>
+                <p className="text-muted-foreground">Please sign in to manage your inventory.</p>
+                <Button onClick={signIn}><LogIn className="mr-2" /> Sign In with Google</Button>
+            </div>
+        )
+    }
+
+    const viewProps = { products, inventory, userId: companyId };
+
+    switch (activeView) {
+      case 'dashboard':
+        return <DashboardView {...viewProps} />;
+      case 'inventory':
+        return <InventoryView {...viewProps} />;
+      case 'products':
+        return <ProductsView {...viewProps} />;
+      case 'reports':
+        return <ReportsView {...viewProps} />;
+      case 'printable':
+        return <PrintableReport {...viewProps} />;
+      default:
+        return <DashboardView {...viewProps} />;
+    }
+  };
+
+  return (
+    <SidebarProvider>
+      <Sidebar variant="inset" collapsible="icon">
+        <SidebarHeader className="items-center justify-center gap-2 group-data-[collapsible=icon]:hidden">
+          <Bot className="size-8 text-primary" />
+          <span className="text-lg font-semibold">StockPilot</span>
+        </SidebarHeader>
+        <SidebarContent>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton onClick={() => setActiveView('dashboard')} isActive={activeView === 'dashboard'} tooltip="Dashboard" disabled={!user}>
+                <LayoutDashboard />
+                <span>Dashboard</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton onClick={() => setActiveView('inventory')} isActive={activeView === 'inventory'} tooltip="Inventory" disabled={!user}>
+                <Boxes />
+                <span>Inventory</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton onClick={() => setActiveView('products')} isActive={activeView === 'products'} tooltip="Products" disabled={!user}>
+                <Package />
+                <span>Products</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+             <SidebarMenuItem>
+              <SidebarMenuButton onClick={() => setActiveView('reports')} isActive={activeView === 'reports'} tooltip="Reports" disabled={!user}>
+                <FilePieChart />
+                <span>Reports</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton onClick={() => setActiveView('printable')} isActive={activeView === 'printable'} tooltip="Printable Report" disabled={!user}>
+                <Printer />
+                <span>Printable Report</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton onClick={() => setIsRecommendationsOpen(true)} tooltip="AI Recommendations" disabled={!user}>
+                <Bot />
+                <span>AI Recommendations</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarContent>
+        <SidebarFooter className="p-4 flex-col gap-4">
+             <div className="flex items-center gap-3">
+                 <Avatar className="size-8">
+                    <AvatarImage src={user?.photoURL ?? `https://avatar.vercel.sh/${user?.uid}.png`} alt="User" />
+                    <AvatarFallback>{user?.email?.[0].toUpperCase() ?? 'U'}</AvatarFallback>
+                </Avatar>
+                <div className="flex flex-col group-data-[collapsible=icon]:hidden">
+                    <span className="text-sm font-medium text-sidebar-foreground">
+                        {user ? user.displayName : 'Guest'}
+                    </span>
+                    <span className="text-xs text-sidebar-foreground/70">
+                        {user ? user.email : 'Offline'}
+                    </span>
+                </div>
+            </div>
+             {user && (
+                <Button variant="ghost" className="w-full justify-start group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-2" onClick={signOut}>
+                    <LogOut className="mr-2 group-data-[collapsible=icon]:mr-0" /> <span className="group-data-[collapsible=icon]:hidden">Sign Out</span>
+                </Button>
+             )}
+        </SidebarFooter>
+      </Sidebar>
+      <SidebarInset className="bg-background min-h-screen">
+          <header className="sticky top-0 z-10 flex h-14 items-center gap-4 border-b bg-background/80 backdrop-blur-sm px-4 sm:h-auto sm:border-0 sm:bg-transparent sm:px-6">
+            <SidebarTrigger className="sm:hidden" />
+            <div className="flex-1">
+                <h1 className="font-semibold text-lg">{activeView.charAt(0).toUpperCase() + activeView.slice(1)}</h1>
+            </div>
+          </header>
+          <main className="p-4 sm:px-6 sm:py-0">{renderView()}</main>
+      </SidebarInset>
+       {user && (
+         <RecommendationsDialog
+            isOpen={isRecommendationsOpen}
+            onOpenChange={setIsRecommendationsOpen}
+            inventory={inventory}
+         />
+       )}
+    </SidebarProvider>
+  );
+};
+
+export default StockPilotApp;
+
+import {
+  getFirestore,
+  collection,
+  onSnapshot,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
+  query,
+  where,
+  getDocs,
+  writeBatch,
+} from 'firebase/firestore';
+import type { Unsubscribe } from 'firebase/firestore';
+import { db } from './firebase'; // Removed appId import
+import type { Product, InventoryItem, ProductFormData, InventoryFormData } from '@/types';
+
+// The company ID is now passed as an argument.
+const getCollectionPath = (companyId: string, collectionName: 'products' | 'inventory') => {
+  return `/companies/${companyId}/${collectionName}`;
+};
+
+// Listen for real-time updates
+export const listenToCollection = <T>(
+  companyId: string,
+  collectionName: 'products' | 'inventory',
+  callback: (data: T[]) => void
+): Unsubscribe => {
+  const path = getCollectionPath(companyId, collectionName);
+  const q = query(collection(db, path));
+  return onSnapshot(q, (snapshot) => {
+    const list = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    })) as T[];
+    callback(list);
+  }, (error) => {
+    console.error(`Error fetching ${collectionName}:`, error);
+    callback([]);
+  });
+};
+
+// Add a new product
+export const addProduct = async (companyId: string, product: ProductFormData) => {
+  const path = getCollectionPath(companyId, 'products');
+  return addDoc(collection(db, path), product);
+};
+
+// Add multiple products in a batch
+export const addBulkProducts = async (companyId: string, products: ProductFormData[]) => {
+  const path = getCollectionPath(companyId, 'products');
+  const productsCollection = collection(db, path);
+  const batch = writeBatch(db);
+  products.forEach((product) => {
+    const docRef = doc(productsCollection);
+    batch.set(docRef, product);
+  });
+  return batch.commit();
+};
+
+
+// Add a new inventory item
+export const addInventoryItem = async (companyId: string, item: InventoryFormData) => {
+  const path = getCollectionPath(companyId, 'inventory');
+  const totalQuantity = item.lots.reduce((sum, lot) => sum + lot.quantity, 0);
+  const itemToAdd = {
+    ...item,
+    quantity: totalQuantity,
+    totalSales: 0,
+  };
+  return addDoc(collection(db, path), itemToAdd);
+};
+
+// Update an inventory item
+export const updateInventoryItem = async (companyId: string, itemId: string, item: Partial<InventoryItem>) => {
+  const path = getCollectionPath(companyId, 'inventory');
+  const docRef = doc(db, path, itemId);
+  let dataToUpdate = item;
+  if (item.lots) {
+    const totalQuantity = item.lots.reduce((sum, lot) => sum + lot.quantity, 0);
+    dataToUpdate = { ...dataToUpdate, quantity: totalQuantity };
+  }
+  return updateDoc(docRef, dataToUpdate);
+};
+
+// Delete an inventory item
+export const deleteInventoryItem = (companyId: string, itemId: string) => {
+  const path = getCollectionPath(companyId, 'inventory');
+  return deleteDoc(doc(db, path, itemId));
+};
+
+// Search for products
+export const searchProducts = async (companyId: string, keyword: string) => {
+  const path = getCollectionPath(companyId, 'products');
+  const productsCollection = collection(db, path);
+  
+  const qByName = query(productsCollection, where("name", "==", keyword));
+  const qByItemNumber = query(productsCollection, where("itemNumber", "==", keyword));
+  
+  const [nameSnapshot, itemNumberSnapshot] = await Promise.all([getDocs(qByName), getDocs(qByItemNumber)]);
+  
+  const results = [...nameSnapshot.docs, ...itemNumberSnapshot.docs];
+  const uniqueResults = Array.from(new Set(results.map(doc => doc.id)))
+    .map(id => {
+      const foundDoc = results.find(doc => doc.id === id);
+      return { id: foundDoc!.id, ...foundDoc!.data() } as Product;
+    });
+
+  return uniqueResults;
+};
+
+// Batch update inventory from sales data or physical counts
+export const batchUpdateInventory = async (
+  companyId: string,
+  updates: { id: string; data: Partial<InventoryItem> }[]
+) => {
+  const path = getCollectionPath(companyId, 'inventory');
+  const inventoryCollection = collection(db, path);
+  const batch = writeBatch(db);
+
+  updates.forEach(update => {
+    const docRef = doc(inventoryCollection, update.id);
+    batch.update(docRef, update.data);
+  });
+
+  return batch.commit();
+};
+
+"use client";
+
+import { useState, useEffect } from 'react';
+import { onAuthStateChanged, signInWithPopup, signOut as firebaseSignOut, GoogleAuthProvider, User } from 'firebase/auth';
+import { auth } from '@/lib/firebase';
+import { useToast } from './use-toast';
+
+const ALLOWED_DOMAINS = ['luckyfood.com'];
+
+export function useAuth() {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const { toast } = useToast();
+
+  const signOut = async () => {
+    try {
+      await firebaseSignOut(auth);
+    } catch (error) {
+      console.error("Error signing out:", error);
+    }
+  };
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        const userDomain = user.email?.split('@')[1];
+        if (userDomain && ALLOWED_DOMAINS.includes(userDomain)) {
+          setUser(user);
+        } else {
+          toast({
+            variant: 'destructive',
+            title: 'Access Denied',
+            description: 'You do not have permission to access this application.',
+          });
+          signOut(); 
+          setUser(null);
+        }
+      } else {
+        setUser(null);
+      }
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [toast]);
+
+  const signIn = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (error) {
+      console.error("Error signing in with Google:", error);
+    }
+  };
+
+  return { user, loading, signIn, signOut };
+}
+
+ export interface Product {
+  id: string;
+  name: string;
+  itemNumber: string;
+  productType: 'Ambient' | 'Refrigerated' | 'Frozen';
+  casesPerPallet: string;
+  shelfLifeInDays: string;
+  targetLabel: 'Regular Customer' | 'Target';
+  countryLabel: 'US' | 'Canada';
+}
+
+export interface Lot {
+  quantity: number;
+  expirationDate: string;
+}
+
+export interface InventoryItem {
+  id: string;
+  productId: string;
+  sku: string;
+  lots: Lot[];
+  locations: string[];
+  customerType: 'Regular' | 'Walmart';
+  onHold: boolean;
+  quantity: number;
+  totalSales: number;
+}
+
+export type CombinedInventoryItem = InventoryItem & {
+  productName: string;
+  itemNumber: string;
+  productType: Product['productType'];
+  pallets: number | 'N/A';
+  targetLabel: Product['targetLabel'];
+  countryLabel: Product['countryLabel'];
+};
+
+export type ProductFormData = Omit<Product, 'id'>;
+export type InventoryFormData = Omit<InventoryItem, 'id' | 'quantity' | 'totalSales'>;   
